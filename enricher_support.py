@@ -13,7 +13,7 @@ class EnricherSupport:
         csv_zip_path: str,
         base_iri: str,
         *,
-        graph_set: GraphSet | None = None,
+        graph_set: GraphSet | None = None, # questo è opzionale 
     ):
         # check sul formato
         if not csv_zip_path:
@@ -31,22 +31,22 @@ class EnricherSupport:
         self.created_br: int = 0
 
         # dependencies
-        self.g_set = graph_set or GraphSet(base_iri=base_iri)
+        self.g_set = graph_set or GraphSet(base_iri=base_iri) # se è passato un graph_set() specifico
 
 # support functions 
 
     def load_processed_files(self):
-        self.processed_files = set()
+        self.processed_files = set() # non dovrebbero esserci duplicati
         if os.path.exists("processed_files.txt"):
             with open("processed_files.txt", "r", encoding="utf-8") as f:
                 for line in f:
-                    self.processed_files.add(line.strip())
+                    self.processed_files.add(line.strip()) # salva i nomi dei files già processati
 
     def save_processed_file(self, file_name):
         with open("processed_files.txt", "a", encoding="utf-8") as f:
-            f.write(file_name + "\n")
+            f.write(file_name + "\n") # li aggiunge 
 
-    def resources_ok(self, max_ram_percent=85, max_cpu_percent=95):
+    def resources_ok(self, max_ram_percent=85, max_cpu_percent=95): # check su memoria (da Copilot)
         ram = psutil.virtual_memory().percent
         cpu = psutil.cpu_percent(interval=0.5)
 
@@ -60,6 +60,8 @@ class EnricherSupport:
 
         return True
 
+# elaborazione dei dati vera e propria
+
     def extract_ids_from_csv(
         self,
         test_limit: int | None = None,
@@ -67,18 +69,18 @@ class EnricherSupport:
     ):
         counter = 0
 
-        # Trova tutti i CSV nella cartella e sottocartelle
+        # Trova tutti i CSV nella cartella e sottocartelle (il percorso era cartella -> sottocartella -> i file csv)
         files_to_process = []
         for root, dirs, files in os.walk(self.csv_zip_path):
             for file_name in files:
                 if file_name.lower().endswith(".csv"):
-                    files_to_process.append(os.path.join(root, file_name))
+                    files_to_process.append(os.path.join(root, file_name)) #aggiunge i file in una lista
 
-        if not files_to_process:
+        if not files_to_process: # se la lista è vuota allora c'è un problema
             print("Nessun file CSV trovato.")
             return
 
-        # Se è stato specificato num_csv, prendi solo i primi n file
+        # Se è stato specificato num_csv, prendi solo i primi n file, testing reasons
         if num_csv:
             files_to_process = files_to_process[:num_csv]
 
@@ -89,7 +91,7 @@ class EnricherSupport:
             try:
                 with open(csv_path, newline="", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
-
+# ogni 500 righe controlla le risorse di sistema (Copilot)
                     for row_index, row in enumerate(reader, start=1):
                         if row_index % 500 == 0 and not self.resources_ok():
                             raise RuntimeError(
@@ -102,7 +104,7 @@ class EnricherSupport:
                         if not ids_field:
                             continue
 
-                        identifiers = ids_field.split()
+                        identifiers = ids_field.split() # gli id sono divisi da spazi
                         omid = None
                         others = []
 
@@ -112,6 +114,7 @@ class EnricherSupport:
                             else:
                                 others.append(identifier)
 
+# salvo omid, altri id e titolo in un dizionario
                         if omid:
                             result = {
                                 "omid": omid,
@@ -121,6 +124,7 @@ class EnricherSupport:
 
                             self.selected_ids.append(result)
 
+# per testare su un numero preciso di entità, non csv
                             if test_limit:
                                 counter += 1
                                 if counter >= test_limit:
@@ -143,7 +147,9 @@ class EnricherSupport:
         title: str | None = None
     ) -> BibliographicResource:
 
-        br_uri = URIRef(f"{self.base_iri}{omid}")
+        br_uri = URIRef(f"{self.base_iri}{omid}") # ex. <https://w3id.org/oc/meta/br/06902194017>
+
+# source .add_br e -add_id: https://oc-ocdm.readthedocs.io/en/latest/modules/graph/oc_ocdm.graph.graph_set.html#oc_ocdm.graph.graph_set.GraphSet 
 
         br = self.g_set.add_br(
             resp_agent="EnricherSupport",
@@ -155,19 +161,19 @@ class EnricherSupport:
                 schema, literal = identifier.split(":", 1)
                 # crea l'Identifier con URI e grafo gestiti dal GraphSet
                 id_obj = self.g_set.add_id(
-                    resp_agent="EnricherSupport",
+                    resp_agent="EnricherSupport", # ? qualsiasi stringa ?
                     res=URIRef(f"{self.base_iri}id/{literal}")  # URI unico
                 )
+                # divide schema dal literal così diventa un'entità autonoma e non stringa
+
                 id_obj.schema = schema
                 id_obj.literal = literal
                 br.has_identifier(id_obj)
             except Exception as e:
                 self.missing_data.append((identifier, str(e)))
 
-
         if title:
             br.has_title(title)
-
 
         self.created_br += 1
         return br
@@ -181,7 +187,7 @@ class EnricherSupport:
                     item.get("others", []),
                     item.get("title")
                 )
-            except Exception as e:
+            except Exception as e: # salva l'omid non processato
                 self.missing_data.append((item["omid"], str(e)))
 
 
@@ -190,8 +196,13 @@ class EnricherSupport:
         enriched_file="enriched.ttl",
         incomplete_file="incomplete.ttl"
     ):
+        # assicura che tutte le BR abbiano un titolo valido...
+        for br in self.g_set.get_br():
+            title = br.get_title()
+            if not title or title.strip() == "":
+                br.has_title("Untitled")  # evita il NoneType
 
-        # Arricchimento
+        # arricchimento con https://github.com/opencitations/oc_graphenricher/tree/main 
         enricher = GraphEnricher(self.g_set)
         enricher.enrich()
         print("Arricchimento completato.")
@@ -199,13 +210,14 @@ class EnricherSupport:
         merged_graph = Graph()
         incomplete_graph = Graph()
 
-        # Unisco tutti i grafi del GraphSet
+        # Unisco tutti i grafi del GraphSet (suggerimento di Copilot)
         for g in self.g_set.graphs():
             merged_graph += g
 
         # Controllo BR?
         for br in self.g_set.get_br():
-
+            
+            # controllare se c'è bisogno di ulteriore arricchimento
             has_doi = False
             has_issn = False
             has_wikidata = False
@@ -229,13 +241,13 @@ class EnricherSupport:
                 br_uri = br.res
 
                 for g in self.g_set.graphs():
-                    for triple in g.triples((br_uri, None, None)):
+                    for triple in g.triples((br_uri, None, None)): #tripla come soggetto
                         incomplete_graph.add(triple)
 
                     for triple in g.triples((None, None, br_uri)):
-                        incomplete_graph.add(triple)
+                        incomplete_graph.add(triple) # tripla come oggetto
 
-        # Salvataggio
+        # Altrimenti: salvataggio
         merged_graph.serialize(enriched_file, format="turtle")
         print(f"Grafo arricchito salvato in: {enriched_file}")
 
@@ -244,7 +256,6 @@ class EnricherSupport:
             print(f"BR incomplete salvate in: {incomplete_file}")
 
         return self.g_set
-
 
 
 """ 
@@ -274,4 +285,5 @@ e", int(subj_count), supplier_prefix=supplier_prefix))
   File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\oc_ocdm\counter_handler\in_memory_counter_handler.py", line 116, in read_counter
     self.prov_counters[entity_short_name][prov_short_name] += [0] * missing_counters
                                                               ~~~~^~~~~~~~~~~~~~~~~~
+
 MemoryError """
