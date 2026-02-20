@@ -259,7 +259,7 @@ class EnricherSupport:
 
 
 """ 
-Errore :( 
+Errore 1 :( 
 
 BR create: 3000
 New ID found: 5:   0%|                         New ID found: 5:   0%| | 13/3000 [00:07<3New ID found: 1172: 100%|██████████████████████████| 3000/3000 [53:16<00:00,  1.07s/it]
@@ -286,4 +286,91 @@ e", int(subj_count), supplier_prefix=supplier_prefix))
     self.prov_counters[entity_short_name][prov_short_name] += [0] * missing_counters
                                                               ~~~~^~~~~~~~~~~~~~~~~~
 
-MemoryError """
+MemoryError 
+
+Errore 2:
+RAM: 77.9% | CPU: 25.3%
+RAM: 77.9% | CPU: 19.8%
+RAM: 77.8% | CPU: 18.6%
+RAM: 77.8% | CPU: 19.9%
+RAM: 77.8% | CPU: 18.2%
+RAM: 77.9% | CPU: 20.3%
+New ID found: 1181:  93%|████████████████████████▎ | 2801/3000 [59:51<04:15,  1.28s/it]
+Traceback (most recent call last):
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 536, in _make_request
+    response = conn.getresponse()
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connection.py", line 507, in getresponse
+    httplib_response = super().getresponse()
+  File "C:\Program Files\Python313\Lib\http\client.py", line 1428, in getresponse       
+    response.begin()
+    ~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\http\client.py", line 331, in begin
+    version, status, reason = self._read_status()
+                              ~~~~~~~~~~~~~~~~~^^
+  File "C:\Program Files\Python313\Lib\http\client.py", line 292, in _read_status       
+    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
+               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\socket.py", line 719, in readinto
+    return self._sock.recv_into(b)
+           ~~~~~~~~~~~~~~~~~~~~^^^
+  File "C:\Program Files\Python313\Lib\ssl.py", line 1304, in recv_into
+    return self.read(nbytes, buffer)
+           ~~~~~~~~~^^^^^^^^^^^^^^^^
+  File "C:\Program Files\Python313\Lib\ssl.py", line 1138, in read
+    return self._sslobj.read(len, buffer)
+           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
+TimeoutError: The read operation timed out
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\requests\adapters.py", line 667, in send
+    resp = conn.urlopen(
+        method=request.method,
+    ...<9 lines>...
+        chunked=chunked,
+    )
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 843, in urlopen
+    retries = retries.increment(
+        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
+    )
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\util\retry.py", line 474, in increment
+    raise reraise(type(error), error, _stacktrace)
+          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\util\util.py", line 39, in reraise
+    raise value
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 789, in urlopen
+    response = self._make_request(
+        conn,
+    ...<10 lines>...
+        **response_kw,
+    )
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 538, in _make_request
+    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
+    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 369, in _raise_timeout
+    raise ReadTimeoutError(
+        self, url, f"Read timed out. (read timeout={timeout_value})"
+    ) from err
+urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='query.wikidata.org', port=443): Read timed out. (read timeout=60)
+
+During handling of the above exception, another exception occurred:
+
+Traceback (most recent call last):
+  File "c:\Users\ilari\Desktop\OpenCitations\test.py", line 29, in <module>
+    main()
+    ~~~~^^
+  File "c:\Users\ilari\Desktop\OpenCitations\test.py", line 18, in main
+    g_set = enricher.enrich(
+        enriched_file="enriched.rdf",
+
+
+
+
+
+
+
+
+
+"""
+
