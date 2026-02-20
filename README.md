@@ -12,16 +12,14 @@
 8. **Salva BR incomplete** separatamente in `incomplete.ttl`.
 
 ## Struttura dati
-fabio:Expression (br/...)
-├── dcterms:title → "Title"
-└── datacite:hasIdentifier → datacite:Identifier (id/...)
 
-datacite:Identifier (id/...)
-├── rdf:type → datacite:Identifier
-├── datacite:usesIdentifierScheme → datacite:doi
-├── literalreification:hasLiteralValue → "10.xxxx/xxxx"
-└── rdfs:label → "identifier 978..."
-
+BibliographicResource (fabio:Expression) – soggetti BR/br/...
+├─ dcterms:title → "Titolo della pubblicazione"
+├─ datacite:hasIdentifier → Identifier (id/...)
+│   ├─ rdf:type → datacite:Identifier
+│   ├─ datacite:usesIdentifierScheme → datacite:doi
+│   ├─ literalreification:hasLiteralValue → "10.xxxx/xxxx"
+│   └─ rdfs:label → "identifier 978..."
 
 ## File principali
 
