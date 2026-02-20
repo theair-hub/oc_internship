@@ -13,13 +13,7 @@
 
 ## Struttura dati
 
-BibliographicResource (fabio:Expression) – soggetti BR/br/...
-├─ dcterms:title → "Titolo della pubblicazione"
-├─ datacite:hasIdentifier → Identifier (id/...)
-│   ├─ rdf:type → datacite:Identifier
-│   ├─ datacite:usesIdentifierScheme → datacite:doi
-│   ├─ literalreification:hasLiteralValue → "10.xxxx/xxxx"
-│   └─ rdfs:label → "identifier 978..."
+BR (fabio:Expression) [br/...]: dcterms:title="Titolo" ; datacite:hasIdentifier → Identifier [id/...]: rdf:type=datacite:Identifier ; datacite:usesIdentifierScheme=datacite:doi ; literalreification:hasLiteralValue="10.xxxx/xxxx" ; rdfs:label="identifier 978..."
 
 ## File principali
 
