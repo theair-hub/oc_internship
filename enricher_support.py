@@ -3,8 +3,10 @@ from oc_ocdm.graph.entities.bibliographic import BibliographicResource
 from oc_ocdm.graph.entities.identifier import Identifier
 from oc_graphenricher.enricher import GraphEnricher
 from rdflib import URIRef, Graph
+from urllib.parse import quote
 import os, csv, io
-import psutil
+import psutil, time, zipfile
+import json
 
 class EnricherSupport:
 
@@ -13,85 +15,79 @@ class EnricherSupport:
         csv_zip_path: str,
         base_iri: str,
         *,
-        graph_set: GraphSet | None = None, # questo è opzionale 
+        graph_set: GraphSet | None = None,
     ):
-        # check sul formato
         if not csv_zip_path:
             raise ValueError("csv_zip_path is required")
-
         if not base_iri:
             raise ValueError("base_iri is required")
 
         self.csv_zip_path = csv_zip_path
         self.base_iri = base_iri
-
-        # internal state
-        self.selected_ids: list[str] = []
         self.missing_data: list[str] = []
         self.created_br: int = 0
-
-        # dependencies
-        self.g_set = graph_set or GraphSet(base_iri=base_iri) # se è passato un graph_set() specifico
-
-# support functions 
+        self.g_set = graph_set or GraphSet(base_iri=base_iri)
 
     def load_processed_files(self):
-        self.processed_files = set() # non dovrebbero esserci duplicati
-        if os.path.exists("processed_files.txt"):
-            with open("processed_files.txt", "r", encoding="utf-8") as f:
-                for line in f:
-                    self.processed_files.add(line.strip()) # salva i nomi dei files già processati
+        self.processed_files = set()
+        if os.path.exists("processed_files.json"):
+            with open("processed_files.json", "r", encoding="utf-8") as f:
+                self.processed_files = set(json.load(f))
 
     def save_processed_file(self, file_name):
-        with open("processed_files.txt", "a", encoding="utf-8") as f:
-            f.write(file_name + "\n") # li aggiunge 
+        self.processed_files.add(file_name)
+        with open("processed_files.json", "w", encoding="utf-8") as f:
+            json.dump(list(self.processed_files), f, indent=2, ensure_ascii=False)
 
-    def resources_ok(self, max_ram_percent=85, max_cpu_percent=95): # check su memoria (da Copilot)
+    def resources_ok(self, max_ram_percent=85, max_cpu_percent=95):
         ram = psutil.virtual_memory().percent
         cpu = psutil.cpu_percent(interval=0.5)
-
         print(f"RAM: {ram}% | CPU: {cpu}%")
-
         if ram > max_ram_percent:
             return False
-
-        if cpu > max_cpu_percent:
+        if cpu > max_cpu_percent: # cpu posso anche toglierla ma ok
             return False
-
         return True
 
-# elaborazione dei dati vera e propria
-
-    def extract_ids_from_csv(
+    def process_folder_streaming(
         self,
         test_limit: int | None = None,
-        num_csv: int | None = None
+        num_csv: int | None = None,
+        batch_size: int = 10
     ):
+        self.load_processed_files()
         counter = 0
+        csv_count = 0
+        batch_files = []  # tiene traccia dei file del batch corrente
 
-        # Trova tutti i CSV nella cartella e sottocartelle (il percorso era cartella -> sottocartella -> i file csv)
         files_to_process = []
         for root, dirs, files in os.walk(self.csv_zip_path):
             for file_name in files:
                 if file_name.lower().endswith(".csv"):
-                    files_to_process.append(os.path.join(root, file_name)) #aggiunge i file in una lista
+                    files_to_process.append(os.path.join(root, file_name))
 
-        if not files_to_process: # se la lista è vuota allora c'è un problema
+        if not files_to_process:
             print("Nessun file CSV trovato.")
             return
 
-        # Se è stato specificato num_csv, prendi solo i primi n file, testing reasons
         if num_csv:
             files_to_process = files_to_process[:num_csv]
 
-        # legge CSV
         for csv_path in files_to_process:
             file_name = os.path.basename(csv_path)
+
+            if file_name in self.processed_files:
+                print(f"Saltato (già processato): {file_name}")
+                continue
+
+            print(f"Processing: {file_name}")
+            csv_count += 1
+            batch_files.append(file_name) # batch per memoria...
 
             try:
                 with open(csv_path, newline="", encoding="utf-8") as f:
                     reader = csv.DictReader(f)
-# ogni 500 righe controlla le risorse di sistema (Copilot)
+
                     for row_index, row in enumerate(reader, start=1):
                         if row_index % 500 == 0 and not self.resources_ok():
                             raise RuntimeError(
@@ -104,7 +100,7 @@ class EnricherSupport:
                         if not ids_field:
                             continue
 
-                        identifiers = ids_field.split() # gli id sono divisi da spazi
+                        identifiers = ids_field.split()
                         omid = None
                         others = []
 
@@ -114,31 +110,52 @@ class EnricherSupport:
                             else:
                                 others.append(identifier)
 
-# salvo omid, altri id e titolo in un dizionario
                         if omid:
-                            result = {
-                                "omid": omid,
-                                "others": others,
-                                "title": title_field
-                            }
+                            try:
+                                self.create_br_from_omid(omid, others, title_field)
+                            except Exception as e:
+                                self.missing_data.append((omid, str(e)))
 
-                            self.selected_ids.append(result)
-
-# per testare su un numero preciso di entità, non csv
                             if test_limit:
                                 counter += 1
                                 if counter >= test_limit:
-                                    print("\n--- TEST COMPLETATO ---")
+                                    print(f"\n--- TEST COMPLETATO ({counter} entità) ---")
                                     return
+
+                print(f"Completato: {file_name}")
+
+                # enrich + reset ogni batch_size CSV
+                if csv_count % batch_size == 0:
+                    print(f"\n--- Arricchimento batch (CSV #{csv_count}) ---")
+                    self.enrich(
+                        enriched_file=f"enriched_{csv_count}.ttl",
+                        incomplete_file=f"incomplete_{csv_count}.ttl"
+                    )
+                    # salva i file processati SOLO dopo l'enrich riuscito
+                    for f in batch_files:
+                        self.save_processed_file(f)
+                    batch_files = []  # reset lista batch
+                    self.g_set = GraphSet(base_iri=self.base_iri)
+                    self.created_br = 0
+                    print(f"--- Reset GraphSet, memoria liberata ---\n")
 
             except RuntimeError as e:
                 print(f"Interruzione controllata: {e}")
                 return
-
             except Exception as e:
-                print(f"Errore leggendo {csv_path}: {e}")
+                print(f"Errore leggendo {file_name}: {e}")
 
+        # enrich finale per i CSV rimasti
+        if self.created_br > 0:
+            print(f"\n--- Arricchimento batch finale ---")
+            self.enrich(
+                enriched_file=f"enriched_final.ttl",
+                incomplete_file=f"incomplete_final.ttl"
+            )
+            for f in batch_files:
+                self.save_processed_file(f)
 
+        print(f"\nProcessati {csv_count} CSV, {self.created_br} BR create.")
 
     def create_br_from_omid(
         self,
@@ -147,9 +164,7 @@ class EnricherSupport:
         title: str | None = None
     ) -> BibliographicResource:
 
-        br_uri = URIRef(f"{self.base_iri}{omid}") # ex. <https://w3id.org/oc/meta/br/06902194017>
-
-# source .add_br e -add_id: https://oc-ocdm.readthedocs.io/en/latest/modules/graph/oc_ocdm.graph.graph_set.html#oc_ocdm.graph.graph_set.GraphSet 
+        br_uri = URIRef(f"{self.base_iri}{omid}")
 
         br = self.g_set.add_br(
             resp_agent="EnricherSupport",
@@ -159,16 +174,27 @@ class EnricherSupport:
         for identifier in others:
             try:
                 schema, literal = identifier.split(":", 1)
-                # crea l'Identifier con URI e grafo gestiti dal GraphSet
-                id_obj = self.g_set.add_id(
-                    resp_agent="EnricherSupport", # ? qualsiasi stringa ?
-                    res=URIRef(f"{self.base_iri}id/{literal}")  # URI unico
-                )
-                # divide schema dal literal così diventa un'entità autonoma e non stringa
 
-                id_obj.schema = schema
-                id_obj.literal = literal
-                br.has_identifier(id_obj)
+                # GraphSet dovrebbe generare uri corretto automaticamente
+                id_obj = self.g_set.add_id(resp_agent="EnricherSupport")
+
+                schema_map = {
+                    "doi":      id_obj.create_doi,
+                    "issn":     id_obj.create_issn,
+                    "isbn":     id_obj.create_isbn,
+                    "pmid":     id_obj.create_pmid,
+                    "pmcid":    id_obj.create_pmcid,
+                    "openalex": id_obj.create_openalex,
+                    "wikidata": id_obj.create_wikidata,
+                    "url":      id_obj.create_url,
+                }
+
+                if schema in schema_map:
+                    schema_map[schema](literal)
+                    br.has_identifier(id_obj)
+                else:
+                    self.missing_data.append((identifier, f"Schema sconosciuto: {schema}"))
+
             except Exception as e:
                 self.missing_data.append((identifier, str(e)))
 
@@ -178,46 +204,42 @@ class EnricherSupport:
         self.created_br += 1
         return br
 
-
-    def build_graphset(self):
-        for item in self.selected_ids:
-            try:
-                self.create_br_from_omid(
-                    item["omid"],
-                    item.get("others", []),
-                    item.get("title")
-                )
-            except Exception as e: # salva l'omid non processato
-                self.missing_data.append((item["omid"], str(e)))
-
-
     def enrich(
         self,
         enriched_file="enriched.ttl",
-        incomplete_file="incomplete.ttl"
+        incomplete_file="incomplete.ttl",
+        max_retries: int = 5,
+        retry_delay: int = 30
     ):
-        # assicura che tutte le BR abbiano un titolo valido...
         for br in self.g_set.get_br():
             title = br.get_title()
             if not title or title.strip() == "":
-                br.has_title("Untitled")  # evita il NoneType
+                br.has_title("Untitled")
 
-        # arricchimento con https://github.com/opencitations/oc_graphenricher/tree/main 
         enricher = GraphEnricher(self.g_set)
-        enricher.enrich()
-        print("Arricchimento completato.")
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                enricher.enrich()
+                print("Arricchimento completato.")
+                break
+            except Exception as e:
+                if "ReadTimeoutError" in type(e).__name__ or "TimeoutError" in str(e) or "timed out" in str(e).lower():
+                    if attempt < max_retries:
+                        print(f"Timeout (tentativo {attempt}/{max_retries}). Riprovo tra {retry_delay}s...")
+                        time.sleep(retry_delay)
+                    else:
+                        print(f"Timeout dopo {max_retries} tentativi. Procedo con dati parziali.")
+                else:
+                    raise
 
         merged_graph = Graph()
         incomplete_graph = Graph()
 
-        # Unisco tutti i grafi del GraphSet (suggerimento di Copilot)
         for g in self.g_set.graphs():
             merged_graph += g
 
-        # Controllo BR?
         for br in self.g_set.get_br():
-            
-            # controllare se c'è bisogno di ulteriore arricchimento
             has_doi = False
             has_issn = False
             has_wikidata = False
@@ -225,7 +247,6 @@ class EnricherSupport:
 
             for identifier in br.get_identifiers():
                 scheme_str = str(identifier.get_scheme()).lower()
-
                 if "doi" in scheme_str:
                     has_doi = True
                 elif "issn" in scheme_str:
@@ -235,19 +256,14 @@ class EnricherSupport:
                 elif "openalex" in scheme_str:
                     has_openalex = True
 
-            # Se manca almeno uno la BR incompleta quindi non salva
             if not (has_doi and has_issn and has_wikidata and has_openalex):
-
                 br_uri = br.res
-
                 for g in self.g_set.graphs():
-                    for triple in g.triples((br_uri, None, None)): #tripla come soggetto
+                    for triple in g.triples((br_uri, None, None)):
+                        incomplete_graph.add(triple)
+                    for triple in g.triples((None, None, br_uri)):
                         incomplete_graph.add(triple)
 
-                    for triple in g.triples((None, None, br_uri)):
-                        incomplete_graph.add(triple) # tripla come oggetto
-
-        # Altrimenti: salvataggio
         merged_graph.serialize(enriched_file, format="turtle")
         print(f"Grafo arricchito salvato in: {enriched_file}")
 
@@ -256,121 +272,3 @@ class EnricherSupport:
             print(f"BR incomplete salvate in: {incomplete_file}")
 
         return self.g_set
-
-
-""" 
-Errore 1 :( 
-
-BR create: 3000
-New ID found: 5:   0%|                         New ID found: 5:   0%| | 13/3000 [00:07<3New ID found: 1172: 100%|██████████████████████████| 3000/3000 [53:16<00:00,  1.07s/it]
-[Storer: INFO] Store the graphs into a file: starting process
-[Storer: INFO] File 'enriched.rdf' added.
-Traceback (most recent call last):
-  File "c:\Users\ilari\Desktop\OpenCitations\test.py", line 45, in <module>
-    main()
-    ~~~~^^
-  File "c:\Users\ilari\Desktop\OpenCitations\test.py", line 28, in main
-    enricher.enrich(enriched_file="test_enriched.ttl")
-    ~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "c:\Users\ilari\Desktop\OpenCitations\enricher_support.py", line 196, in enrich  
-    enricher.enrich()
-    ~~~~~~~~~~~~~~~^^
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\oc_graphenricher\enricher\__init__.py", line 238, in enrich
-    prov.generate_provenance()
-    ~~~~~~~~~~~~~~~~~~~~~~~~^^
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\oc_ocdm\prov\prov_set.py", line 168, in generate_provenance
-    last_snapshot_res: Optional[URIRef] = self._retrieve_last_snapshot(cur_subj.res)    
-e", int(subj_count), supplier_prefix=supplier_prefix))
-                                   ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\oc_ocdm\counter_handler\in_memory_counter_handler.py", line 116, in read_counter
-    self.prov_counters[entity_short_name][prov_short_name] += [0] * missing_counters
-                                                              ~~~~^~~~~~~~~~~~~~~~~~
-
-MemoryError 
-
-Errore 2:
-RAM: 77.9% | CPU: 25.3%
-RAM: 77.9% | CPU: 19.8%
-RAM: 77.8% | CPU: 18.6%
-RAM: 77.8% | CPU: 19.9%
-RAM: 77.8% | CPU: 18.2%
-RAM: 77.9% | CPU: 20.3%
-New ID found: 1181:  93%|████████████████████████▎ | 2801/3000 [59:51<04:15,  1.28s/it]
-Traceback (most recent call last):
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 536, in _make_request
-    response = conn.getresponse()
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connection.py", line 507, in getresponse
-    httplib_response = super().getresponse()
-  File "C:\Program Files\Python313\Lib\http\client.py", line 1428, in getresponse       
-    response.begin()
-    ~~~~~~~~~~~~~~^^
-  File "C:\Program Files\Python313\Lib\http\client.py", line 331, in begin
-    version, status, reason = self._read_status()
-                              ~~~~~~~~~~~~~~~~~^^
-  File "C:\Program Files\Python313\Lib\http\client.py", line 292, in _read_status       
-    line = str(self.fp.readline(_MAXLINE + 1), "iso-8859-1")
-               ~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^
-  File "C:\Program Files\Python313\Lib\socket.py", line 719, in readinto
-    return self._sock.recv_into(b)
-           ~~~~~~~~~~~~~~~~~~~~^^^
-  File "C:\Program Files\Python313\Lib\ssl.py", line 1304, in recv_into
-    return self.read(nbytes, buffer)
-           ~~~~~~~~~^^^^^^^^^^^^^^^^
-  File "C:\Program Files\Python313\Lib\ssl.py", line 1138, in read
-    return self._sslobj.read(len, buffer)
-           ~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^
-TimeoutError: The read operation timed out
-
-The above exception was the direct cause of the following exception:
-
-Traceback (most recent call last):
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\requests\adapters.py", line 667, in send
-    resp = conn.urlopen(
-        method=request.method,
-    ...<9 lines>...
-        chunked=chunked,
-    )
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 843, in urlopen
-    retries = retries.increment(
-        method, url, error=new_e, _pool=self, _stacktrace=sys.exc_info()[2]
-    )
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\util\retry.py", line 474, in increment
-    raise reraise(type(error), error, _stacktrace)
-          ~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\util\util.py", line 39, in reraise
-    raise value
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 789, in urlopen
-    response = self._make_request(
-        conn,
-    ...<10 lines>...
-        **response_kw,
-    )
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 538, in _make_request
-    self._raise_timeout(err=e, url=url, timeout_value=read_timeout)
-    ~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\ilari\AppData\Roaming\Python\Python313\site-packages\urllib3\connectionpool.py", line 369, in _raise_timeout
-    raise ReadTimeoutError(
-        self, url, f"Read timed out. (read timeout={timeout_value})"
-    ) from err
-urllib3.exceptions.ReadTimeoutError: HTTPSConnectionPool(host='query.wikidata.org', port=443): Read timed out. (read timeout=60)
-
-During handling of the above exception, another exception occurred:
-
-Traceback (most recent call last):
-  File "c:\Users\ilari\Desktop\OpenCitations\test.py", line 29, in <module>
-    main()
-    ~~~~^^
-  File "c:\Users\ilari\Desktop\OpenCitations\test.py", line 18, in main
-    g_set = enricher.enrich(
-        enriched_file="enriched.rdf",
-
-
-
-
-
-
-
-
-
-"""
-
