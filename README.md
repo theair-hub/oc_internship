@@ -1,27 +1,62 @@
-# oc_internship
+# Graph Enrichment Pipeline
 
-## Descrizione
+This project implements a streaming pipeline for building and enriching a bibliographic RDF knowledge graph starting from large CSV datasets containing OMID-based records and external persistent identifiers.
 
-1. **Legge CSV** → carica OMID e identificatori.
-2. **Estrae OMID + identificatori** dai record.
-3. **Crea BR (`fabio:Expression`) e Identifier (`datacite:Identifier`)**.
-4. **Costruisce un `GraphSet`** con tutti i nodi.
-5. **Arricchisce automaticamente** il grafo (metadata, titoli, schemi identificatori).
-6. **Controlla completezza** dei BR.
-7. **Salva grafo arricchito** in `enriched.rdf`.
-8. **Salva BR incomplete** separatamente in `incomplete.ttl`.
+## Overview
 
-## Struttura dati
+The pipeline:
+- reads CSV files in streaming mode,
+- extracts OMID, titles, and external identifiers (DOI, ISSN, OpenAlex, etc.),
+- builds a RDF graph of Bibliographic Resources (BRs),
+- attaches Identifier nodes to each BR,
+- enriches metadata automatically using GraphEnricher,
+- manages memory through batch processing and periodic GraphSet resets,
+- exports enriched and incomplete RDF graphs.
 
-BR (fabio:Expression) [br/...]: dcterms:title="Titolo" ; datacite:hasIdentifier → Identifier [id/...]: rdf:type=datacite:Identifier ; datacite:usesIdentifierScheme=datacite:doi ; literalreification:hasLiteralValue="10.xxxx/xxxx" ; rdfs:label="identifier 978..."
+## Data Model
 
-## File principali
+### Bibliographic Resource (BR)
+Each BR is identified by an OMID-based URI and represents a scholarly entity. It has identifier(s) and title (if present). 
 
-- `test.py` → esempio di esecuzione per testing.
-- `enriched.rdf` → grafo arricchito con le entità del primo CSV.
-- `incomplete.ttl` → BR incompleti rilevati durante l’arricchimento.
+### Identifier
+Represents persistent identifiers associated with a BR:
+- DOI
+- ISSN
+- ISBN
+- PMID / PMCID
+- OpenAlex ID
+- URL
 
-## Fonti e riferimenti
+Each identifier stores:
+- scheme type
+- literal value
 
-- [GraphSet Documentation](https://oc-ocdm.readthedocs.io/en/latest/modules/graph/oc_ocdm.graph.graph_set.html#oc_ocdm.graph.graph_set.GraphSet)  
+## Enrichment Process
+
+Enrichment is performed using external scholarly APIs via the Graph Enricher module:
+- Crossref (DOI, ISSN resolution)
+- OpenAlex (entity linking and identifiers)
+- ORCID (author identifiers)
+- VIAF (authority control data)
+
+New identifiers are automatically added when discovered.
+
+## Output
+
+The pipeline generates two outputs:
+
+### Enriched graph
+- Format: JSON-LD
+- File: `enriched.jsonld`
+- Contains all processed and enriched BRs
+
+### Incomplete graph
+- Format: Turtle (`.ttl`)
+- File: `incomplete.ttl`
+- Contains BRs missing at least one key identifier (DOI, ISSN, OpenAlex, Wikidata)
+
+### Sources
+- [OpenCitations Meta dump](https://download.opencitations.net/#meta)
+- [OpenCitations Documentation](https://github.com/opencitations/crowdsourcing/blob/main/docs/csv_documentation-v1_1_2.pdf)
+- [OC-OCDM Documentation](https://opencitations.github.io/oc_ocdm/) 
 - [OC GraphEnricher GitHub](https://github.com/opencitations/oc_graphenricher/tree/main)
