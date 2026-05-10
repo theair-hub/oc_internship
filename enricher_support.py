@@ -1,14 +1,31 @@
 from oc_ocdm.graph import GraphSet
 from oc_ocdm.graph.entities.bibliographic import BibliographicResource
-from oc_ocdm.graph.entities.identifier import Identifier
-from oc_graphenricher.enricher import GraphEnricher
 from rdflib import URIRef, Graph
-from urllib.parse import quote
-import os, csv, io
-import psutil, time, zipfile
+
+import sys
+import os
+import psutil
+import time
 import json
+import polars as pl
+
+# Add local package path
+sys.path.insert(
+    0,
+    r"C:\Users\ilari\Desktop\VS_CODE\OpenCitations\oc_graphenricher"
+)
+
+from oc_graphenricher.enricher import GraphEnricher
+
 
 class EnricherSupport:
+    """
+    Utility class to:
+    - read CSV files
+    - create Bibliographic Resources (BRs)
+    - enrich RDF graphs
+    - save enriched and incomplete graphs
+    """
 
     def __init__(
         self,
@@ -17,258 +34,559 @@ class EnricherSupport:
         *,
         graph_set: GraphSet | None = None,
     ):
+        # Validate required parameters
         if not csv_zip_path:
             raise ValueError("csv_zip_path is required")
+
         if not base_iri:
             raise ValueError("base_iri is required")
 
         self.csv_zip_path = csv_zip_path
         self.base_iri = base_iri
+
+        # Store problematic identifiers/errors
         self.missing_data: list[str] = []
+
+        # Counters
         self.created_br: int = 0
+        self.total_created_br: int = 0
+
+        # Use existing GraphSet or create a new one
         self.g_set = graph_set or GraphSet(base_iri=base_iri)
 
     def load_processed_files(self):
+        """
+        Load already processed CSV files from JSON.
+        """
         self.processed_files = set()
+
         if os.path.exists("processed_files.json"):
-            with open("processed_files.json", "r", encoding="utf-8") as f:
+            with open(
+                "processed_files.json",
+                "r",
+                encoding="utf-8"
+            ) as f:
                 self.processed_files = set(json.load(f))
 
-    def save_processed_file(self, file_name):
-        self.processed_files.add(file_name)
-        with open("processed_files.json", "w", encoding="utf-8") as f:
-            json.dump(list(self.processed_files), f, indent=2, ensure_ascii=False)
+    def save_processed_files_batch(self, batch_files: list[str]):
+        """
+        Save processed CSV files to JSON.
+        """
+        for f in batch_files:
+            self.processed_files.add(f)
 
-    def resources_ok(self, max_ram_percent=85, max_cpu_percent=95):
+        with open(
+            "processed_files.json",
+            "w",
+            encoding="utf-8"
+        ) as f:
+            json.dump(
+                list(self.processed_files),
+                f,
+                indent=2,
+                ensure_ascii=False,
+            )
+
+    def resources_ok(self, max_ram_percent=85):
+        """
+        Check RAM usage.
+        """
         ram = psutil.virtual_memory().percent
-        cpu = psutil.cpu_percent(interval=0.5)
-        print(f"RAM: {ram}% | CPU: {cpu}%")
-        if ram > max_ram_percent:
-            return False
-        if cpu > max_cpu_percent: # cpu posso anche toglierla ma ok
-            return False
-        return True
+
+        print(f"RAM: {ram}%")
+
+        return ram <= max_ram_percent
+
+    def _flush_batch(
+        self,
+        enriched_file: str,
+        incomplete_file: str,
+        label: str = "batch",
+        max_retries: int = 5,
+        retry_delay: int = 30,
+    ):
+        """
+        Enrich current GraphSet and reset memory.
+        """
+        print(
+            f"\n--- Enriching {label} "
+            f"({self.created_br} BR) ---"
+        )
+
+        self.enrich(
+            enriched_file=enriched_file,
+            incomplete_file=incomplete_file,
+            max_retries=max_retries,
+            retry_delay=retry_delay,
+        )
+
+        # Update total counter
+        self.total_created_br += self.created_br
+
+        # Reset GraphSet to free memory
+        self.g_set = GraphSet(base_iri=self.base_iri)
+
+        self.created_br = 0
+
+        print(
+            f"--- GraphSet reset "
+            f"(total so far: {self.total_created_br} BR) ---\n"
+        )
 
     def process_folder_streaming(
         self,
         test_limit: int | None = None,
         num_csv: int | None = None,
-        batch_size: int = 10
+        batch_size: int = 10,
+        enriched_file: str = "enriched.ttl",
+        incomplete_file: str = "incomplete.ttl",
+        max_retries: int = 5,
+        retry_delay: int = 30,
     ):
+        """
+        Process CSV files incrementally.
+
+        Features:
+        - batch enrichment
+        - resumable execution
+        - memory monitoring
+        - immediate saving of processed files
+        """
         self.load_processed_files()
+
         counter = 0
         csv_count = 0
-        batch_files = []  # tiene traccia dei file del batch corrente
 
-        files_to_process = []
-        for root, dirs, files in os.walk(self.csv_zip_path):
-            for file_name in files:
-                if file_name.lower().endswith(".csv"):
-                    files_to_process.append(os.path.join(root, file_name))
+        # Collect CSV files recursively
+        files_to_process = [
+            os.path.abspath(os.path.join(root, file_name))
+            for root, _, files in os.walk(self.csv_zip_path)
+            for file_name in files
+            if file_name.lower().endswith(".csv")
+        ]
 
         if not files_to_process:
-            print("Nessun file CSV trovato.")
+            print("No CSV files found.")
             return
 
+        # Optional limit on number of CSVs
         if num_csv:
             files_to_process = files_to_process[:num_csv]
 
         for csv_path in files_to_process:
+
             file_name = os.path.basename(csv_path)
 
+            # Skip already processed files
             if file_name in self.processed_files:
-                print(f"Saltato (già processato): {file_name}")
+                print(
+                    f"Skipped (already processed): "
+                    f"{file_name}"
+                )
                 continue
 
             print(f"Processing: {file_name}")
+
             csv_count += 1
-            batch_files.append(file_name) # batch per memoria...
 
             try:
-                with open(csv_path, newline="", encoding="utf-8") as f:
-                    reader = csv.DictReader(f)
+                # Read only required columns
+                df = pl.read_csv(
+                    csv_path,
+                    columns=["id", "title"],
+                    schema_overrides={
+                        "id": pl.Utf8,
+                        "title": pl.Utf8,
+                    },
+                    infer_schema=False,
+                    null_values=["", "N/A"],
+                )
 
-                    for row_index, row in enumerate(reader, start=1):
-                        if row_index % 500 == 0 and not self.resources_ok():
-                            raise RuntimeError(
-                                f"Risorse sistema troppo alte durante {file_name}"
+                for row_index, row in enumerate(
+                    df.iter_rows(named=True),
+                    start=1,
+                ):
+
+                    # Check RAM usage periodically
+                    if (
+                        row_index % 500 == 0
+                        and not self.resources_ok()
+                    ):
+                        raise RuntimeError(
+                            f"System resources too high "
+                            f"during {file_name}"
+                        )
+
+                    ids_field = row.get("id")
+                    title_field = row.get("title")
+
+                    # Skip rows without identifiers
+                    if not ids_field:
+                        continue
+
+                    identifiers = ids_field.split()
+
+                    omid = None
+                    others = []
+
+                    # Separate OMID from other identifiers
+                    for identifier in identifiers:
+
+                        if identifier.startswith("omid:"):
+                            omid = identifier.removeprefix(
+                                "omid:"
                             )
 
-                        ids_field = row.get("id")
-                        title_field = row.get("title")
+                        else:
+                            others.append(identifier)
 
-                        if not ids_field:
-                            continue
+                    # Skip rows without OMID
+                    if not omid:
+                        continue
 
-                        identifiers = ids_field.split()
-                        omid = None
-                        others = []
+                    try:
+                        self.create_br_from_omid(
+                            omid,
+                            others,
+                            title_field,
+                        )
 
-                        for identifier in identifiers:
-                            if identifier.startswith("omid:"):
-                                omid = identifier.removeprefix("omid:")
-                            else:
-                                others.append(identifier)
+                    except Exception as e:
+                        self.missing_data.append(
+                            (omid, str(e))
+                        )
 
-                        if omid:
-                            try:
-                                self.create_br_from_omid(omid, others, title_field)
-                            except Exception as e:
-                                self.missing_data.append((omid, str(e)))
+                    # Optional test mode
+                    if test_limit:
+                        counter += 1
 
-                            if test_limit:
-                                counter += 1
-                                if counter >= test_limit:
-                                    print(f"\n--- TEST COMPLETATO ({counter} entità) ---")
-                                    return
+                        if counter >= test_limit:
 
-                print(f"Completato: {file_name}")
+                            print(
+                                f"\n--- TEST COMPLETED "
+                                f"({counter} entities) ---"
+                            )
 
-                # enrich + reset ogni batch_size CSV
+                            if self.created_br > 0:
+                                self._flush_batch(
+                                    enriched_file,
+                                    incomplete_file,
+                                    label=(
+                                        f"test "
+                                        f"({counter} entities)"
+                                    ),
+                                    max_retries=max_retries,
+                                    retry_delay=retry_delay,
+                                )
+
+                            return
+
+                print(
+                    f"Completed: {file_name} "
+                    f"({self.created_br} BR "
+                    f"in current batch)"
+                )
+
+                # Save processed file immediately
+                self.save_processed_files_batch(
+                    [file_name]
+                )
+
+                # Flush enrichment batch periodically
                 if csv_count % batch_size == 0:
-                    print(f"\n--- Arricchimento batch (CSV #{csv_count}) ---")
-                    self.enrich(
-                        enriched_file=f"enriched_{csv_count}.ttl",
-                        incomplete_file=f"incomplete_{csv_count}.ttl"
+
+                    self._flush_batch(
+                        enriched_file,
+                        incomplete_file,
+                        label=f"CSV #{csv_count}",
+                        max_retries=max_retries,
+                        retry_delay=retry_delay,
                     )
-                    # salva i file processati SOLO dopo l'enrich riuscito
-                    for f in batch_files:
-                        self.save_processed_file(f)
-                    batch_files = []  # reset lista batch
-                    self.g_set = GraphSet(base_iri=self.base_iri)
-                    self.created_br = 0
-                    print(f"--- Reset GraphSet, memoria liberata ---\n")
 
             except RuntimeError as e:
-                print(f"Interruzione controllata: {e}")
+
+                print(f"Controlled interruption: {e}")
+
                 return
+
             except Exception as e:
-                print(f"Errore leggendo {file_name}: {e}")
 
-        # enrich finale per i CSV rimasti
+                print(
+                    f"Error reading {file_name}: {e}"
+                )
+
+        # Final flush
         if self.created_br > 0:
-            print(f"\n--- Arricchimento batch finale ---")
-            self.enrich(
-                enriched_file=f"enriched_final.ttl",
-                incomplete_file=f"incomplete_final.ttl"
-            )
-            for f in batch_files:
-                self.save_processed_file(f)
 
-        print(f"\nProcessati {csv_count} CSV, {self.created_br} BR create.")
+            self._flush_batch(
+                enriched_file,
+                incomplete_file,
+                label="final",
+                max_retries=max_retries,
+                retry_delay=retry_delay,
+            )
+
+        print(
+            f"\nProcessed {csv_count} CSVs, "
+            f"{self.total_created_br} BR "
+            f"created in total."
+        )
+
+        print(
+            f"Missing/error BRs or identifiers: "
+            f"{len(self.missing_data)}"
+        )
 
     def create_br_from_omid(
         self,
         omid: str,
         others: list[str],
-        title: str | None = None
-    ) -> BibliographicResource:
+        title: str | None = None,
+    ) -> BibliographicResource | None:
+        """
+        Create a Bibliographic Resource from OMID.
+        """
 
+        # Extract identifier schemas
+        schemas = {
+            identifier.split(":", 1)[0]
+            for identifier in others
+            if ":" in identifier
+        }
+
+        # Skip already complete resources
+        if {"doi", "issn", "openalex"}.issubset(
+            schemas
+        ):
+            return None
+
+        # Create BR URI
         br_uri = URIRef(f"{self.base_iri}{omid}")
 
+        # Add BR to GraphSet
         br = self.g_set.add_br(
-            resp_agent="EnricherSupport",
-            res=br_uri
+            resp_agent="0009-0008-2026-5889",
+            res=br_uri,
         )
 
+        # Mapping schema -> creation method
+        schema_map_factories = {
+            "doi": "create_doi",
+            "issn": "create_issn",
+            "isbn": "create_isbn",
+            "pmid": "create_pmid",
+            "pmcid": "create_pmcid",
+            "openalex": "create_openalex",
+            "url": "create_url",
+        }
+
         for identifier in others:
+
             try:
-                schema, literal = identifier.split(":", 1)
+                schema, literal = identifier.split(
+                    ":",
+                    1
+                )
 
-                # GraphSet dovrebbe generare uri corretto automaticamente
-                id_obj = self.g_set.add_id(resp_agent="EnricherSupport")
+                # Skip unsupported schemas
+                if schema not in schema_map_factories:
 
-                schema_map = {
-                    "doi":      id_obj.create_doi,
-                    "issn":     id_obj.create_issn,
-                    "isbn":     id_obj.create_isbn,
-                    "pmid":     id_obj.create_pmid,
-                    "pmcid":    id_obj.create_pmcid,
-                    "openalex": id_obj.create_openalex,
-                    "wikidata": id_obj.create_wikidata,
-                    "url":      id_obj.create_url,
-                }
+                    self.missing_data.append(
+                        (
+                            identifier,
+                            f"Unknown schema: {schema}"
+                        )
+                    )
 
-                if schema in schema_map:
-                    schema_map[schema](literal)
-                    br.has_identifier(id_obj)
-                else:
-                    self.missing_data.append((identifier, f"Schema sconosciuto: {schema}"))
+                    continue
+
+                # Create identifier entity
+                id_obj = self.g_set.add_id(
+                    resp_agent="0009-0008-2026-5889"
+                )
+
+                # Dynamically call factory method
+                getattr(
+                    id_obj,
+                    schema_map_factories[schema]
+                )(literal)
+
+                # Link identifier to BR
+                br.has_identifier(id_obj)
 
             except Exception as e:
-                self.missing_data.append((identifier, str(e)))
 
-        if title:
+                self.missing_data.append(
+                    (identifier, str(e))
+                )
+
+        # Add title if available
+        if (
+            title
+            and title.strip().lower()
+            not in ("", "unknown")
+        ):
             br.has_title(title)
 
         self.created_br += 1
+
         return br
 
     def enrich(
         self,
-        enriched_file="enriched.ttl",
-        incomplete_file="incomplete.ttl",
+        enriched_file: str = "enriched.ttl",
+        incomplete_file: str = "incomplete.ttl",
         max_retries: int = 5,
-        retry_delay: int = 30
+        retry_delay: int = 30,
     ):
-        for br in self.g_set.get_br():
-            title = br.get_title()
-            if not title or title.strip() == "":
-                br.has_title("Untitled")
-
+        """
+        Enrich GraphSet resources and save RDF graphs.
+        """
         enricher = GraphEnricher(self.g_set)
 
+        # Retry on timeout
         for attempt in range(1, max_retries + 1):
+
             try:
                 enricher.enrich()
-                print("Arricchimento completato.")
+
+                print("Enrichment completed.")
+
                 break
+
             except Exception as e:
-                if "ReadTimeoutError" in type(e).__name__ or "TimeoutError" in str(e) or "timed out" in str(e).lower():
-                    if attempt < max_retries:
-                        print(f"Timeout (tentativo {attempt}/{max_retries}). Riprovo tra {retry_delay}s...")
-                        time.sleep(retry_delay)
-                    else:
-                        print(f"Timeout dopo {max_retries} tentativi. Procedo con dati parziali.")
+
+                is_timeout = (
+                    "ReadTimeoutError"
+                    in type(e).__name__
+                    or "TimeoutError" in str(e)
+                    or "timed out"
+                    in str(e).lower()
+                )
+
+                if (
+                    is_timeout
+                    and attempt < max_retries
+                ):
+
+                    print(
+                        f"Timeout "
+                        f"(attempt {attempt}/"
+                        f"{max_retries}). "
+                        f"Retrying in "
+                        f"{retry_delay}s..."
+                    )
+
+                    time.sleep(retry_delay)
+
+                elif is_timeout:
+
+                    print(
+                        f"Timeout after "
+                        f"{max_retries} attempts. "
+                        f"Proceeding with "
+                        f"partial data."
+                    )
+
                 else:
                     raise
 
         merged_graph = Graph()
         incomplete_graph = Graph()
 
+        # Merge all RDF graphs
         for g in self.g_set.graphs():
             merged_graph += g
 
+        # Find incomplete BRs
         for br in self.g_set.get_br():
+
             has_doi = False
             has_issn = False
-            has_wikidata = False
             has_openalex = False
 
             for identifier in br.get_identifiers():
-                scheme_str = str(identifier.get_scheme()).lower()
+
+                scheme_str = str(
+                    identifier.get_scheme()
+                ).lower()
+
                 if "doi" in scheme_str:
                     has_doi = True
+
                 elif "issn" in scheme_str:
                     has_issn = True
-                elif "wikidata" in scheme_str:
-                    has_wikidata = True
+
                 elif "openalex" in scheme_str:
                     has_openalex = True
 
-            if not (has_doi and has_issn and has_wikidata and has_openalex):
+            # Keep BRs missing at least one identifier
+            if not (
+                has_doi
+                and has_issn
+                and has_openalex
+            ):
+
                 br_uri = br.res
+
                 for g in self.g_set.graphs():
-                    for triple in g.triples((br_uri, None, None)):
-                        incomplete_graph.add(triple)
-                    for triple in g.triples((None, None, br_uri)):
+
+                    # Add triples where BR is subject
+                    for triple in g.triples(
+                        (br_uri, None, None)
+                    ):
                         incomplete_graph.add(triple)
 
-        merged_graph.serialize(enriched_file, format="turtle")
-        print(f"Grafo arricchito salvato in: {enriched_file}")
+                    # Add triples where BR is object
+                    for triple in g.triples(
+                        (None, None, br_uri)
+                    ):
+                        incomplete_graph.add(triple)
 
+        # Append to existing enriched graph
+        if os.path.exists(enriched_file):
+
+            existing = Graph()
+
+            existing.parse(
+                enriched_file,
+                format="turtle"
+            )
+
+            merged_graph += existing
+
+        merged_graph.serialize(
+            enriched_file,
+            format="turtle",
+        )
+
+        print(
+            f"Enriched graph saved to: "
+            f"{enriched_file}"
+        )
+
+        # Save incomplete graph
         if len(incomplete_graph) > 0:
-            incomplete_graph.serialize(incomplete_file, format="turtle")
-            print(f"BR incomplete salvate in: {incomplete_file}")
+
+            if os.path.exists(incomplete_file):
+
+                existing_inc = Graph()
+
+                existing_inc.parse(
+                    incomplete_file,
+                    format="turtle"
+                )
+
+                incomplete_graph += existing_inc
+
+            incomplete_graph.serialize(
+                incomplete_file,
+                format="turtle",
+            )
+
+            print(
+                f"Incomplete graph saved to: "
+                f"{incomplete_file}"
+            )
 
         return self.g_set
