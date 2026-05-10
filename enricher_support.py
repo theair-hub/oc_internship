@@ -15,7 +15,7 @@ sys.path.insert(
     r"C:\Users\ilari\Desktop\VS_CODE\OpenCitations\oc_graphenricher"
 )
 
-from oc_graphenricher.enricher import GraphEnricher
+from oc_graphenricher.enricher import GraphEnricher, Storer
 
 
 class EnricherSupport:
@@ -138,7 +138,7 @@ class EnricherSupport:
         test_limit: int | None = None,
         num_csv: int | None = None,
         batch_size: int = 10,
-        enriched_file: str = "enriched.ttl",
+        enriched_file: str = "enriched.jsonld",
         incomplete_file: str = "incomplete.ttl",
         max_retries: int = 5,
         retry_delay: int = 30,
@@ -490,103 +490,50 @@ class EnricherSupport:
 
                 else:
                     raise
+# https://opencitations.github.io/oc_ocdm/guides/storing/
+        
+        storer = Storer(
+            output_format="json-ld",
+            abstract_set=self.g_set,
+            dir_split=10000,
+            n_file_item=1000,
+        )
 
-        merged_graph = Graph()
+        storer.store_graphs_in_file(enriched_file)
+        print(f"Grafo arricchito salvato in JSON-LD: {enriched_file}")
+
         incomplete_graph = Graph()
 
-        # Merge all RDF graphs
-        for g in self.g_set.graphs():
-            merged_graph += g
-
-        # Find incomplete BRs
         for br in self.g_set.get_br():
-
             has_doi = False
             has_issn = False
+            has_wikidata = False
             has_openalex = False
 
             for identifier in br.get_identifiers():
-
-                scheme_str = str(
-                    identifier.get_scheme()
-                ).lower()
+                scheme_str = str(identifier.get_scheme()).lower()
 
                 if "doi" in scheme_str:
                     has_doi = True
-
                 elif "issn" in scheme_str:
                     has_issn = True
-
+                elif "wikidata" in scheme_str:
+                    has_wikidata = True
                 elif "openalex" in scheme_str:
                     has_openalex = True
 
-            # Keep BRs missing at least one identifier
-            if not (
-                has_doi
-                and has_issn
-                and has_openalex
-            ):
-
+            if not (has_doi and has_issn and has_wikidata and has_openalex):
                 br_uri = br.res
 
                 for g in self.g_set.graphs():
-
-                    # Add triples where BR is subject
-                    for triple in g.triples(
-                        (br_uri, None, None)
-                    ):
+                    for triple in g.triples((br_uri, None, None)):
+                        incomplete_graph.add(triple)
+                    for triple in g.triples((None, None, br_uri)):
                         incomplete_graph.add(triple)
 
-                    # Add triples where BR is object
-                    for triple in g.triples(
-                        (None, None, br_uri)
-                    ):
-                        incomplete_graph.add(triple)
-
-        # Append to existing enriched graph
-        if os.path.exists(enriched_file):
-
-            existing = Graph()
-
-            existing.parse(
-                enriched_file,
-                format="turtle"
-            )
-
-            merged_graph += existing
-
-        merged_graph.serialize(
-            enriched_file,
-            format="turtle",
-        )
-
-        print(
-            f"Enriched graph saved to: "
-            f"{enriched_file}"
-        )
-
-        # Save incomplete graph
         if len(incomplete_graph) > 0:
-
-            if os.path.exists(incomplete_file):
-
-                existing_inc = Graph()
-
-                existing_inc.parse(
-                    incomplete_file,
-                    format="turtle"
-                )
-
-                incomplete_graph += existing_inc
-
-            incomplete_graph.serialize(
-                incomplete_file,
-                format="turtle",
-            )
-
-            print(
-                f"Incomplete graph saved to: "
-                f"{incomplete_file}"
-            )
+            incomplete_graph.serialize(incomplete_file, format="turtle")
+            print(f"BR incomplete salvate in: {incomplete_file}")
 
         return self.g_set
+        
