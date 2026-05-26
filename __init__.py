@@ -1,14 +1,6 @@
 """
 Copyright 2021 Gabriele Pisciotta - ga.pisciotta@gmail.com
-
-Permission to use, copy, modify, and/or distribute this software for any purpose with or without fee is hereby granted,
-provided that the above copyright notice and this permission notice appear in all copies.
-
-THE SOFTWARE IS PROVIDED "AS IS" AND THE AUTHOR DISCLAIMS ALL WARRANTIES WITH REGARD TO THIS SOFTWARE INCLUDING ALL
-IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS. IN NO EVENT SHALL THE AUTHOR BE LIABLE FOR ANY SPECIAL, DIRECT,
-INDIRECT, OR CONSEQUENTIAL DAMAGES OR ANY DAMAGES WHATSOEVER RESULTING FROM LOSS OF USE, DATA OR PROFITS, WHETHER IN
-AN ACTION OF CONTRACT, NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE USE OR PERFORMANCE
-OF THIS SOFTWARE.
+...
 """
 
 __author__ = "Gabriele Pisciotta"
@@ -31,32 +23,16 @@ from tqdm.contrib import DummyTqdmFile
 
 
 class GraphEnricher:
-    """
-    The GraphEnricher class is the one responsible to enrich all the entities in a given graph set compliant to
-    the OpenCitations Data Model (OCDM). You have to specify in input the graph set, the output file name of the
-    enriched graph and the provenance file name. It's also possible to specify a debug flag to get more details
-    about the enrichment process.
-    """
 
     def __init__(self,
                  g_set: GraphSet,
-                 graph_filename: str = "enriched.jsonld",
-                 provenance_filename: str = "provenance.nquads",
-                 incomplete_filename: str = "incomplete.nquads",
+                 graph_filename: str = "enriched.rdf",
+                 provenance_filename: str = "provenance.rdf",
+                 incomplete_filename: str = "incomplete.nt",
                  info_dir: str = "",
                  debug: bool = False,
-                 serialize_in_the_middle: bool = False, 
+                 serialize_in_the_middle: bool = False,
                  use_wikidata: bool = True):
-        """
-
-        :param g_set: graph set to be enriched
-        :param graph_filename: file name of the enriched graph set that will be serialized
-        :param provenance_filename: file name of the provenance that will be serialized
-        :param info_dir: the path to the counters directory
-        :param debug: a bool flag to enable richer output
-        :param serialize_in_the_middle: a bool flag to enable the serialization each 50 Bibliographic Resources (BRs)
-        processed (the resulting file will be always overwritten, this may slow the whole process)
-        """
 
         requests_cache.install_cache('GraphEnricher_cache')
 
@@ -71,7 +47,6 @@ class GraphEnricher:
         self.new_id_found = 0
         self.graph_filename = graph_filename
         self.provenance_filename = provenance_filename
-        self.incomplete_filename = incomplete_filename
         self.info_dir = info_dir
         self.serialize_in_the_middle = serialize_in_the_middle
         self.use_wikidata = use_wikidata
@@ -352,18 +327,9 @@ class GraphEnricher:
 
     def _add_id(self, entity: Union[BibliographicResource, ResponsibleAgent], literal: str, schema: str,
                 by_means_of: str = None) -> None:
-        """ Method that let you add a new identifier to an entity,
-        having specified the literal value, the schema and optionally the API used
-
-        :param entity: a bibliographic resource or an agent role
-        :param literal: the literal value of the identifier
-        :param schema: the schema of the identifier
-        :param by_means_of: an optional string that let you specify the API used
-        """
 
         old_identifiers = entity.get_identifiers()
 
-        # Check if the ID is already associated to the entity
         for i in old_identifiers:
             if i.get_literal_value() == literal:
                 if self.debug:
@@ -391,20 +357,15 @@ class GraphEnricher:
         entity.has_identifier(new_id)
 
         if self.debug:
-
-            # To pretty print it with tqdm's write()
-            to_print = "[{}] FOUND {}: {}".format(datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S'), schema,
-                                                  literal)
+            to_print = "[{}] FOUND {}: {}".format(datetime.datetime.now().strftime('%Y/%m/%d %H:%M:%S'), schema, literal)
             if by_means_of is not None:
                 to_print += ", by means of {}".format(by_means_of)
-
             print(to_print)
             print("\tOLD: {}".format([x.get_literal_value() for x in old_identifiers]))
             print("\tNEW : {}".format([x.get_literal_value() for x in entity.get_identifiers()]))
 
     @contextlib.contextmanager
     def __std_out_err_redirect_tqdm(self):
-        """ This method is used to print messages with the TQDM progress bar"""
         orig_out_err = sys.stdout, sys.stderr
         try:
             sys.stdout, sys.stderr = map(DummyTqdmFile, orig_out_err)
