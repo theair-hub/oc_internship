@@ -72,7 +72,6 @@ class EnricherSupport:
 
     def _flush_batch(
         self,
-        enriched_file: str,
         incomplete_file: str,
         label: str = "batch",
         max_retries: int = 5,
@@ -81,7 +80,6 @@ class EnricherSupport:
         print(f"\n--- Enriching {label} ({self.created_br} BR) ---")
 
         self.enrich(
-            enriched_file=enriched_file,
             incomplete_file=incomplete_file,
             max_retries=max_retries,
             retry_delay=retry_delay,
@@ -98,7 +96,6 @@ class EnricherSupport:
         test_limit: int | None = None,
         num_csv: int | None = None,
         batch_size: int = 10,
-        enriched_file: str = "enriched.jsonld",
         incomplete_file: str = "incomplete.nt",
         max_retries: int = 5,
         retry_delay: int = 30,
@@ -183,7 +180,6 @@ class EnricherSupport:
                                 print(f"\n--- TEST COMPLETED ({counter} entities) ---")
                                 if self.created_br > 0:
                                     self._flush_batch(
-                                        enriched_file,
                                         incomplete_file,
                                         label=f"test ({counter} entities)",
                                         max_retries=max_retries,
@@ -196,7 +192,6 @@ class EnricherSupport:
 
                     if csv_count % batch_size == 0:
                         self._flush_batch(
-                            enriched_file,
                             incomplete_file,
                             label=f"CSV #{csv_count}",
                             max_retries=max_retries,
@@ -212,7 +207,6 @@ class EnricherSupport:
 
         if self.created_br > 0:
             self._flush_batch(
-                enriched_file,
                 incomplete_file,
                 label="final",
                 max_retries=max_retries,
@@ -274,27 +268,29 @@ class EnricherSupport:
 
     def enrich(
         self,
-        enriched_file: str = "enriched.jsonld",
         incomplete_file: str = "incomplete.nt",
         max_retries: int = 5,
         retry_delay: int = 30,
     ):
         os.makedirs(os.path.join(os.getcwd(), "info_dir"), exist_ok=True)
+        os.makedirs(os.path.join(os.getcwd(), "enriched"), exist_ok=True)
+        os.makedirs(os.path.join(os.getcwd(), "provenance"), exist_ok=True)
 
-        # Timestamp univoco per questo batch
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%Sf")
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
 
-        timestamped_enriched = enriched_file.replace(".jsonld", f"_{timestamp}.jsonld")
-        timestamped_provenance = f"provenance_{timestamp}.nq"
-        temp_incomplete = f"incomplete_temp_{timestamp}.nt"
-
+        timestamped_enriched = os.path.join("enriched", f"enriched_{timestamp}.jsonld")
+        timestamped_provenance = os.path.join("provenance", f"provenance_{timestamp}.nq")
+        temp_incomplete = f"incomplete_temp_{timestamp}.nt"  # ← root, non in enriched/
+        
         enricher = GraphEnricher(
             self.g_set,
             graph_filename=timestamped_enriched,
             provenance_filename=timestamped_provenance,
-            incomplete_filename=temp_incomplete, 
+            incomplete_filename=temp_incomplete,
             info_dir=os.path.join(os.getcwd(), "info_dir"),
-            use_wikidata=False
+            use_wikidata=False,
+            use_viaf=False,
+            use_orcid=False
         )
 
         for attempt in range(1, max_retries + 1):
