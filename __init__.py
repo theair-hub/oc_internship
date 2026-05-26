@@ -32,7 +32,9 @@ class GraphEnricher:
                  info_dir: str = "",
                  debug: bool = False,
                  serialize_in_the_middle: bool = False,
-                 use_wikidata: bool = True):
+                 use_wikidata: bool = True,
+                 use_viaf: bool = True, 
+                 use_orcid: bool = True):
 
         requests_cache.install_cache('GraphEnricher_cache')
 
@@ -50,6 +52,8 @@ class GraphEnricher:
         self.info_dir = info_dir
         self.serialize_in_the_middle = serialize_in_the_middle
         self.use_wikidata = use_wikidata
+        self.use_viaf = use_viaf
+        self.use_orcid = use_orcid
 
     def enrich(self) -> None:
         """ The enricher iterates each BR contained in the graph set.
@@ -225,7 +229,7 @@ class GraphEnricher:
                                         author_id_found.append((orcid, 'orcid'))
 
                         # Search for the author on Wikidata
-                        if not has_viaf:
+                        if self.use_viaf and not has_viaf:
                             viaf = self.viaf_api.query(ra.get_given_name(), ra.get_family_name(), br.get_title())
                             if viaf is not None:
                                 self._add_id(ra, viaf, 'viaf')
@@ -313,7 +317,7 @@ class GraphEnricher:
             # Serialize incomplete graph
             incomplete_storer = Storer(
                 abstract_set=incomplete_g_set,
-                output_format="nquads"
+                output_format="nt11"
             )
 
             incomplete_storer.store_graphs_in_file(
