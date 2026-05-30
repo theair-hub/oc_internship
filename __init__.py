@@ -51,6 +51,9 @@ class GraphEnricher:
         self.provenance_filename = provenance_filename
         self.info_dir = info_dir
         self.serialize_in_the_middle = serialize_in_the_middle
+        # MODIFICA: aggiunti flag opzionali per disabilitare selettivamente
+        # le API di Wikidata, VIAF e ORCID. Utile per velocizzare il processo
+        # o escludere servizi non necessari per un determinato batch.
         self.use_wikidata = use_wikidata
         self.use_viaf = use_viaf
         self.use_orcid = use_orcid
@@ -144,6 +147,9 @@ class GraphEnricher:
                         has_doi = res 
 
                 # If it hasn't a Wikidata ID, extract br's identifiers and search on wikidata for that IDs
+
+                # MODIFICA: il blocco Wikidata viene eseguito solo se use_wikidata=True
+
                 if self.use_wikidata and len(has_wikidata) == 0:
                     for i in br.get_identifiers():
                         if i.get_scheme() == br.iri_doi:
@@ -229,6 +235,9 @@ class GraphEnricher:
                                         author_id_found.append((orcid, 'orcid'))
 
                         # Search for the author on Wikidata
+
+                        # MODIFICA: il blocco VIAF viene eseguito solo se use_viaf=True
+
                         if self.use_viaf and not has_viaf:
                             viaf = self.viaf_api.query(ra.get_given_name(), ra.get_family_name(), br.get_title())
                             if viaf is not None:
@@ -236,6 +245,8 @@ class GraphEnricher:
                                 author_id_found.append((viaf, 'viaf'))
 
                         # If the author doesn't have Wikidata ID
+                        # MODIFICA: il blocco Wikidata per gli autori segue lo stesso pattern
+
                         if self.use_wikidata and not has_wikidata:
                             for literal, scheme in author_id_found:
                                 res = self.wikidata_api.query(literal, scheme)
@@ -260,7 +271,7 @@ class GraphEnricher:
             # Serialize enriched graph in JSON-LD
             gs_storer = Storer(
                 abstract_set=self.g_set,
-                output_format="json-ld",
+                output_format="json-ld", # MODIFICA: originale usava "nt11"
                 dir_split=10000,
                 n_file_item=1000,
             )
@@ -273,6 +284,9 @@ class GraphEnricher:
             prov_storer.store_graphs_in_file(self.provenance_filename, "")
 
             # Build GraphSet with incomplete BRs
+            # MODIFICA: aggiunta gestione dei BR incompleti, assente nell'originale.
+            # Si costruisce un GraphSet separato con solo i BR a cui manca almeno uno
+            # tra DOI, ISSN, Wikidata e OpenAlex, e lo si serializza in un file distinto.
             incomplete_g_set = GraphSet(
                 base_iri=self.g_set.base_iri
             )
@@ -315,6 +329,11 @@ class GraphEnricher:
                     )
 
             # Serialize incomplete graph
+
+            # MODIFICA: formato nt11 scelto perché append-safe: il chiamante (EnricherSupport)
+            # accoda questo file temporaneo al file principale tramite shutil.copyfileobj,
+            # evitando la sovrascrittura che avverrebbe con json-ld.
+            
             incomplete_storer = Storer(
                 abstract_set=incomplete_g_set,
                 output_format="nt11"
