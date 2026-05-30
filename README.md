@@ -1,97 +1,104 @@
 # Graph Enrichment Pipeline
 
-Il sistema è composto da due classi principali che lavorano in sequenza: `EnricherSupport` gestisce la lettura dei dati e l'orchestrazione del processo, mentre `GraphEnricher` si occupa dell'arricchimento vero e proprio delle entità RDF.
+The system consists of two main classes working in sequence: `EnricherSupport` handles data reading and process orchestration, while `GraphEnricher` takes care of the actual enrichment of RDF entities.
 
 ---
 
 ## EnricherSupport
 
-`EnricherSupport` è il punto di ingresso del processo. Prende in input un archivio `.tar.gz` contenente file CSV con dati bibliografici di OpenCitations (OMID, identificatori, titolo) e li trasforma in un grafo RDF pronto per l'arricchimento.
+`EnricherSupport` is the entry point of the process. It takes as input a `.tar.gz` archive containing CSV files with bibliographic data from OpenCitations (OMID, identifiers, title) and turns them into an RDF graph ready for enrichment.
 
-### Flusso principale: `process_folder_streaming`
+### Main flow: `process_folder_streaming`
 
-Il metodo apre l'archivio una sola volta e itera i CSV in streaming, senza estrarre tutto su disco. Per ogni riga:
+The method opens the archive once and iterates over the CSVs in streaming mode, without extracting everything to disk. For each row:
 
-1. Estrae l'OMID e gli altri identificatori (DOI, ISSN, OpenAlex, ecc.)
-2. Salta le righe già complete (che hanno già DOI + ISSN + OpenAlex)
-3. Chiama `create_br_from_omid` per creare la `BibliographicResource` nel `GraphSet`
+- Extracts the OMID and other identifiers (DOI, ISSN, OpenAlex, etc.)
+- Skips already complete rows (those that already have DOI + ISSN + OpenAlex)
+- Calls `create_br_from_omid` to create the `BibliographicResource` in the `GraphSet`
 
-I file già processati vengono tracciati in `processed_files.json`, così un run interrotto può riprendere da dove si era fermato.
+Already processed files are tracked in `processed_files.json`, so an interrupted run can resume from where it left off.
 
 ### Batch processing
 
-Per evitare di esaurire la RAM con dataset grandi, il grafo viene arricchito e svuotato ogni `batch_size` CSV tramite `_flush_batch`. Dopo ogni flush il `GraphSet` viene ricreato da zero. Un contatore `total_created_br` tiene traccia del totale complessivo.
+To avoid running out of RAM with large datasets, the graph is enriched and reset every `batch_size` CSVs via `_flush_batch`. After each flush the `GraphSet` is recreated from scratch. A `total_created_br` counter keeps track of the overall total.
 
 ### `create_br_from_omid`
 
-Crea una `BibliographicResource` nel `GraphSet` a partire dall'OMID, collegandovi tutti gli identificatori disponibili tramite i metodi factory di `oc_ocdm` (`create_doi`, `create_issn`, ecc.). Se il titolo è presente e non è "unknown", viene aggiunto alla BR. Le entità vengono create con `resp_agent = "https://orcid.org/0009-0008-2026-5889"`.
+Creates a `BibliographicResource` in the `GraphSet` from the OMID, attaching all available identifiers via `oc_ocdm` factory methods (`create_doi`, `create_issn`, etc.). If the title is present and not `"unknown"`, it is added to the BR. Entities are created with `resp_agent = "https://orcid.org/0009-0008-2026-5889"`.
 
 ### `enrich`
 
-Istanzia un `GraphEnricher` e chiama il suo metodo `enrich()` con gestione automatica dei timeout (fino a `max_retries` tentativi con pausa `retry_delay`). I nomi dei file di output vengono resi univoci con un timestamp al microsecondo per evitare sovrascritture tra batch.
+Instantiates a `GraphEnricher` and calls its `enrich()` method with automatic timeout handling (up to `max_retries` attempts with a `retry_delay` pause). Output file names are made unique with a microsecond timestamp to avoid overwrites between batches.
 
 ---
 
 ## GraphEnricher
 
-`GraphEnricher` riceve un `GraphSet` già popolato e lo arricchisce interrogando API esterne per trovare identificatori mancanti.
+`GraphEnricher` receives an already populated `GraphSet` and enriches it by querying external APIs for missing identifiers.
 
-### Flusso di arricchimento: `enrich`
+> **Note:** `GraphEnricher` is based on the [oc_graphenricher](https://github.com/opencitations/oc_graphenricher) library by Gabriele Pisciotta. The following changes were made to remove unnecessary parts and reduce slowdowns and errors:
+> - Added `use_wikidata`, `use_viaf`, `use_orcid` flags to the constructor (all `True` by default), to selectively disable the corresponding APIs
+> - Added a title check before the Crossref query, to avoid useless API calls when there is not enough data for a reliable match
+> - Added handling of incomplete BRs with separate append-mode serialization
+> - Changed the enriched graph output format from `nt11` to `json-ld`
 
-Itera ogni `BibliographicResource` nel grafo (saltando issue e volumi di riviste) e per ciascuna:
+### Enrichment flow: `enrich`
 
-**Arricchimento della BR:**
-- Se ha un ISSN, interroga Crossref per trovare ISSN aggiuntivi
-- Se non ha un DOI ma ha un titolo valido, interroga Crossref per trovarlo
-- Se non ha un ID Wikidata, lo cerca tramite DOI, ISSN, PMID o PMCID
-- Se non ha un ID OpenAlex, lo cerca tramite tutti gli identificatori disponibili
+Iterates over every `BibliographicResource` in the graph (skipping journal issues and volumes) and for each one:
 
-**Arricchimento degli autori (AR con ruolo `iri_author`):**
-- Se manca l'ORCID, lo cerca tramite le API ORCID
-- Se manca il VIAF, lo cerca tramite le API VIAF
-- Se manca il Wikidata ID, lo cerca tramite gli altri identificatori trovati
+**BR enrichment:**
+- If it has an ISSN, queries Crossref for additional ISSNs
+- If it has no DOI but has a valid title (not missing and not `"unknown"`), queries Crossref to find one
+- If it has no Wikidata ID (and `use_wikidata=True`), searches for one via DOI, ISSN, PMID or PMCID
+- If it has no OpenAlex ID, searches for one via all available identifiers
 
-**Arricchimento dei publisher (AR con ruolo `iri_publisher`):**
-- Se manca il Crossref ID, lo cerca tramite il DOI della BR
+**Author enrichment** (AR with role `iri_author`):
+- If ORCID is missing, searches for it via the ORCID API
+- If VIAF is missing (and `use_viaf=True`), searches for it via the VIAF API
+- If Wikidata ID is missing (and `use_wikidata=True`), searches for it via other found identifiers
 
-Tutti i nuovi identificatori trovati vengono aggiunti al grafo tramite `_add_id`, che verifica prima che non siano già presenti.
+**Publisher enrichment** (AR with role `iri_publisher`):
+- If Crossref ID is missing, searches for it via the BR's DOI
 
-### Salvataggio degli output
+All newly found identifiers are added to the graph via `_add_id`, which first checks they are not already present.
 
-Al termine dell'iterazione, `GraphEnricher` produce tre output:
+### Output
 
-- **`enriched_<timestamp>.jsonld`** — il grafo arricchito in formato JSON-LD
-- **`provenance_<timestamp>.nq`** — la provenance in formato N-Quads, generata da `ProvSet` che traccia chi ha aggiunto cosa e quando
-- **`incomplete.nt`** — le BR che al termine risultano ancora prive di almeno uno tra DOI, ISSN, Wikidata e OpenAlex; questo file viene aggiornato in append (N-Triples) senza sovrascrivere i batch precedenti
+At the end of the iteration, `GraphEnricher` produces three outputs:
 
-L'`info_dir` viene usata da `oc_ocdm` per tenere i contatori interni degli snapshot di provenance, garantendo URI valide e progressive per ogni entità.
+- `enriched_<timestamp>.jsonld` — the enriched graph in JSON-LD format; the timestamp ensures each batch produces a distinct file without overwrites
+- `provenance_<timestamp>.nq` — provenance in N-Quads format, generated by `ProvSet` which tracks who added what and when
+- `incomplete.nt` — BRs that still lack at least one of DOI, ISSN, Wikidata and OpenAlex; this file is updated in append mode (N-Triples, append-safe format) without overwriting previous batches
+
+`info_dir` is used by `oc_ocdm` to store internal provenance snapshot counters, ensuring valid and progressive URIs for each entity.
 
 ---
 
-## Struttura delle cartelle di output
+## Output folder structure
 
 ```
-graph/
-  br/   ← BibliographicResource arricchite
-  id/   ← Identifier
+enriched/
+  enriched_<timestamp>.jsonld   ← enriched graph (one file per batch)
 provenance/
-  br/   ← provenance delle BR
-  id/   ← provenance degli ID
-incomplete.nt     ← BR incomplete (append)
-info_dir/         ← contatori interni oc_ocdm
-processed_files.json  ← CSV già processati
+  provenance_<timestamp>.nq     ← provenance (one file per batch)
+incomplete.nt                   ← incomplete BRs (appended across batches)
+info_dir/                       ← oc_ocdm internal counters
+processed_files.json            ← already processed CSVs
 ```
 
 ---
 
-## Considerazioni
+## Notes
 
-- Il sistema è progettato per essere **riprendibile**: se il processo viene interrotto, i CSV già completati non vengono riprocessati grazie a `processed_files.json`. L'unico rischio è la perdita del batch in corso al momento del crash.
-- L'uso di `requests_cache` in `GraphEnricher` evita chiamate duplicate alle API esterne durante lo stesso run.
-- Wikidata è disabilitato (`use_wikidata=False`) nella configurazione attuale per ridurre i tempi di esecuzione.
+- The system is designed to be **resumable**: if the process is interrupted, already completed CSVs are not reprocessed thanks to `processed_files.json`. The only risk is losing the batch in progress at the time of the crash.
+- `requests_cache` in `GraphEnricher` avoids duplicate API calls during the same run.
+- In the current configuration, `use_wikidata=False` to reduce execution time.
 
-### Sources
-- [OpenCitations Meta dump](https://download.opencitations.net/#meta)
-- [OpenCitations Documentation](https://github.com/opencitations/crowdsourcing/blob/main/docs/csv_documentation-v1_1_2.pdf)
-- [OC-OCDM Documentation](https://opencitations.github.io/oc_ocdm/) 
-- [OC GraphEnricher GitHub](https://github.com/opencitations/oc_graphenricher/tree/main)
+---
+
+## Sources
+
+- [OpenCitations Meta dump](https://opencitations.net/meta)
+- [OpenCitations Documentation](https://opencitations.net/documentation)
+- [OC-OCDM Documentation](https://oc-ocdm.readthedocs.io)
+- [OC GraphEnricher GitHub](https://github.com/opencitations/oc_graphenricher)
