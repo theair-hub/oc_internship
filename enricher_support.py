@@ -297,3 +297,33 @@ class EnricherSupport:
                     print(f"Timeout after {max_retries} attempts. Proceeding with partial data.")
                 else:
                     raise
+
+if __name__ == "__main__":
+    import argparse
+
+    parser = argparse.ArgumentParser(description="Bibliographic enrichment with OpenCitations")
+
+    parser.add_argument("--csv_path", required=True, help="Path to the .tar.gz archive")
+    parser.add_argument("--base-iri", default="https://w3id.org/oc/meta/")
+    parser.add_argument("--num-csv", type=int, default=1)
+    parser.add_argument("--test-limit", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=10)
+    parser.add_argument("--max-retries", type=int, default=2)
+    parser.add_argument("--retry-delay", type=int, default=30)
+
+    args = parser.parse_args()
+
+    enricher = EnricherSupport(csv_zip_path=args.csv_path, base_iri=args.base_iri)
+
+    enricher.process_folder_streaming(
+        num_csv=args.num_csv,
+        test_limit=args.test_limit,
+        batch_size=args.batch_size,
+        max_retries=args.max_retries,
+        retry_delay=args.retry_delay,
+    )
+
+    print(f"\nTotal BRs created: {enricher.total_created_br}")
+    print(f"Missing/error BRs or identifiers: {len(enricher.missing_data)}")
+    if enricher.missing_data:
+        print(enricher.missing_data[:5])
