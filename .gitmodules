@@ -1,3 +1,4 @@
 [submodule "oc_graphenricher"]
 	path = oc_graphenricher
 	url = https://github.com/theair-hub/oc_graphenricher
+	branch = internship
