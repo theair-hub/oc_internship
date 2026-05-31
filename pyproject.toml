@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "oc-graphenricher",
     "oc-ocdm>=11.0.14",
     "orjson>=3.11.9",
     "polars>=1.41.2",
@@ -16,3 +17,6 @@ dependencies = [
 members = [
     "oc_graphenricher",
 ]
+
+[tool.uv.sources]
+oc-graphenricher = { workspace = true, editable = true }
