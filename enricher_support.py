@@ -1,25 +1,16 @@
 import tarfile
-import shutil
 
 from oc_ocdm.graph import GraphSet
 from oc_ocdm.graph.entities.bibliographic import BibliographicResource
 from rdflib import URIRef
 import io
 
-import sys
 import os
 import psutil
 import time
 import json
 import polars as pl
 from datetime import datetime
-
-# Add local package path
-sys.path.insert(
-    0,
-    r"C:\Users\ilari\Desktop\VS_CODE\OpenCitations\oc_graphenricher"
-)
-
 from oc_graphenricher.enricher import GraphEnricher
 
 
@@ -112,9 +103,10 @@ class EnricherSupport:
                 if m.isfile() and m.name.lower().endswith(".csv")
             ]
 
-            if not files_to_process:
-                print("No CSV files found in archive.")
-                return
+            files_to_process = [
+                m for m in files_to_process
+                if os.path.basename(m.name) not in self.processed_files
+            ]
 
             if num_csv:
                 files_to_process = files_to_process[:num_csv]
@@ -276,21 +268,15 @@ class EnricherSupport:
         os.makedirs(os.path.join(os.getcwd(), "enriched"), exist_ok=True)
         os.makedirs(os.path.join(os.getcwd(), "provenance"), exist_ok=True)
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-
-        timestamped_enriched = os.path.join("enriched", f"enriched_{timestamp}.jsonld")
-        timestamped_provenance = os.path.join("provenance", f"provenance_{timestamp}.nq")
-        temp_incomplete = f"incomplete_temp_{timestamp}.nt"  # ← root, non in enriched/
-        
         enricher = GraphEnricher(
             self.g_set,
-            graph_filename=timestamped_enriched,
-            provenance_filename=timestamped_provenance,
-            incomplete_filename=temp_incomplete,
+            graph_filename=os.path.join("enriched", "enriched.jsonld"),
+            provenance_filename=os.path.join("provenance", "provenance.nq"),
+            incomplete_filename=incomplete_file,
             info_dir=os.path.join(os.getcwd(), "info_dir"),
             use_wikidata=False,
             use_viaf=False,
-            use_orcid=False
+            use_orcid=False,
         )
 
         for attempt in range(1, max_retries + 1):
@@ -298,14 +284,12 @@ class EnricherSupport:
                 enricher.enrich()
                 print("Enrichment completed.")
                 break
-
             except Exception as e:
                 is_timeout = (
                     "ReadTimeoutError" in type(e).__name__
                     or "TimeoutError" in str(e)
                     or "timed out" in str(e).lower()
                 )
-
                 if is_timeout and attempt < max_retries:
                     print(f"Timeout (attempt {attempt}/{max_retries}). Retrying in {retry_delay}s...")
                     time.sleep(retry_delay)
@@ -313,10 +297,3 @@ class EnricherSupport:
                     print(f"Timeout after {max_retries} attempts. Proceeding with partial data.")
                 else:
                     raise
-
-        # Appendi le BR incomplete al file principale (append-safe in formato nt)
-        if os.path.exists(temp_incomplete):
-            with open(temp_incomplete, "r", encoding="utf-8") as src:
-                with open(incomplete_file, "a", encoding="utf-8") as dst:
-                    shutil.copyfileobj(src, dst)
-            os.remove(temp_incomplete)
