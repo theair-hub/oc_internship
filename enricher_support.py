@@ -10,7 +10,6 @@ import psutil
 import time
 import json
 import polars as pl
-from datetime import datetime
 from oc_graphenricher.enricher import GraphEnricher
 
 
@@ -270,9 +269,6 @@ class EnricherSupport:
 
         enricher = GraphEnricher(
             self.g_set,
-            graph_filename=os.path.join("enriched", "enriched.jsonld"),
-            provenance_filename=os.path.join("provenance", "provenance.nq"),
-            incomplete_filename=incomplete_file,
             info_dir=os.path.join(os.getcwd(), "info_dir"),
             use_wikidata=False,
             use_viaf=False,
