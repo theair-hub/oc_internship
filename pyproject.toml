@@ -5,7 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
-    "oc-graphenricher",
+    "oc-graphenricher>=2.1.0",
     "oc-ocdm>=11.0.14",
     "orjson>=3.11.9",
     "polars>=1.41.2",
@@ -13,10 +13,3 @@ dependencies = [
     "rdflib>=7.6.0",
 ]
 
-[tool.uv.workspace]
-members = [
-    "oc_graphenricher",
-]
-
-[tool.uv.sources]
-oc-graphenricher = { workspace = true, editable = true }

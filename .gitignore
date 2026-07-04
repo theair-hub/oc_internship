@@ -1,0 +1,11 @@
+# venv / uv
+.venv/
+
+# output e stato di processo dello script
+output*/
+processed_files.json
+GraphEnricher_cache.sqlite*
+
+# cache Python
+__pycache__/
+*.pyc
