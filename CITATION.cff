@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite it as below."
+title: "OC Enricher Support"
+abstract: "A command-line tool that reads an OpenCitations Meta CSV dump, builds Bibliographic Resources compliant with the OpenCitations Data Model, enriches them with external identifiers via oc_graphenricher, and saves the result to disk."
+authors:
+  - family-names: "De Dominicis"
+    given-names: "Ilaria"
+    email: "ilaria.dedominicis2@studio.unibo.it"
+    affiliation: "University of Bologna"
+license: ISC
+repository-code: "https://github.com/theair_hub/oc_internship"
+keywords:
+  - open-science
+  - bibliographic-data
+  - opencitations
+  - rdf
+  - metadata-enrichment
